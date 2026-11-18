@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DTI Output Dashboard</title>
+<style>
+  :root{
+    --bg:#0f1720; --panel:#17212d; --line:#263446; --text:#e9eef5; --muted:#8fa1b5;
+    --accent:#3fa7ff; --good:#3ddc97; --bad:#ff6b6b; --warn:#ffc857;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--bg);color:var(--text);
+    font-family:"Segoe UI",system-ui,-apple-system,Arial,sans-serif;overflow:hidden}
+  .wrap{height:100vh;display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:1.6vh;padding:2.2vh 1.8vw}
+  header{display:flex;justify-content:space-between;align-items:baseline}
+  h1{font-size:3.6vh;font-weight:600;letter-spacing:.02em}
+  .sub{font-size:2vh;color:var(--muted)}
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:1.2vw}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:1.2vh;padding:1.6vh 1.2vw}
+  .kpi .label{font-size:1.8vh;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .kpi .value{font-size:7vh;font-weight:700;line-height:1.1;margin-top:.6vh}
+  .kpi .delta{font-size:2vh;margin-top:.4vh;color:var(--muted)}
+  .up{color:var(--good)} .down{color:var(--bad)}
+  .main{display:grid;grid-template-columns:2.2fr 1fr;gap:1.2vw;min-height:0}
+  .left{display:grid;grid-template-rows:minmax(0,1.5fr) minmax(0,1fr);gap:1.2vh;min-height:0}
+  .card h2{font-size:2vh;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.8vh}
+  .chartcard{display:flex;flex-direction:column;min-height:0}
+  .chart{flex:1;min-height:0;position:relative}
+  svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  svg text{fill:var(--muted);font-size:13px;font-family:inherit}
+  .legend{display:inline-flex;gap:1.2vw;margin-left:1.5vw;font-size:1.6vh;text-transform:none;letter-spacing:0}
+  .dot{display:inline-block;width:1.2vh;height:1.2vh;border-radius:50%;margin-right:.4vw}
+  .notes{overflow:hidden;min-height:0}
+  .row{display:grid;grid-template-columns:7.5vw 4.5vw 1fr;gap:.8vw;padding:1vh 0;border-bottom:1px solid var(--line);font-size:2vh;align-items:baseline}
+  .row:last-child{border-bottom:0}
+  .row .d{color:var(--muted)} .row .v{font-weight:700;text-align:right}
+  .row .n{color:var(--warn);font-size:1.7vh}
+  .err{position:fixed;bottom:.6vh;right:1vw;font-size:1.3vh;color:var(--warn)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>DTI Output</h1>
+    <div class="sub" id="stamp"></div>
+  </header>
+  <section class="kpis" id="kpis"></section>
+  <section class="main">
+    <div class="left">
+      <div class="card chartcard">
+        <h2>Daily output &mdash; last 30 working days
+          <span class="legend"><span><span class="dot" style="background:var(--accent)"></span>Daily</span>
+          <span><span class="dot" style="background:var(--warn)"></span>5-day average</span></span></h2>
+        <div class="chart" id="daily"></div>
+      </div>
+      <div class="card chartcard">
+        <h2>Weekly total &mdash; last 10 weeks</h2>
+        <div class="chart" id="weekly"></div>
+      </div>
+    </div>
+    <div class="card notes">
+      <h2>Latest entries</h2>
+      <div id="rows"></div>
+    </div>
+  </section>
+</div>
+<div class="err" id="err"></div>
+
+<script>
+/* ---------------------------------------------------------------
+   DATA SOURCE
+   To make the dashboard live: in Google Sheets use
+   File > Share > Publish to web > pick the DTI tab > "CSV" > Publish,
+   then paste that link below. If left blank (or if it can't be reached)
+   the dashboard falls back to the snapshot embedded further down.
+---------------------------------------------------------------- */
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ-acERodEzjict5JXalgFl9TX9m5bTktMpDoFQakApcXa3rZ0lgYV4I2CVTRlIkGWefVqD1NA6cfTO/pub?gid=1474573063&single=true&output=csv";
+const REFRESH_MINUTES = 10;   // how often the page re-reads the sheet
+
+const EMBEDDED_CSV = `Date,DTI Output,Notes / Adjustments
+07 Aug 2026,22.6,
+11 Aug 2026,34.7,
+12 Aug 2026,31.2,
+13 Aug 2026,31.4,
+14 Aug 2026,22.3,
+17 Aug 2026,44.5,
+18 Aug 2026,29.3,
+19 Aug 2026,10.9,
+20 Aug 2026,42.1,
+21 Aug 2026,29.5,
+24 Aug 2026,43.9,
+25 Aug 2026,27.2,
+26 Aug 2026,30.2,
+27 Aug 2026,47.9,
+28 Aug 2026,24.5,Adjusted (Added Double Bed FG043.1)
+31 Aug 2026,35.4,
+01 Sep 2026,30.0,
+02 Sep 2026,25.6,
+03 Sep 2026,41.2,
+04 Sep 2026,33.3,
+05 Sep 2026,26.0,Transferred 26x Hospitality Diners (FG-081)
+07 Sep 2026,56.4,Recalculated (+FG039 & 6x FG005.2)
+08 Sep 2026,54.9,Recalculated (Shifted items to 07 Sep)
+09 Sep 2026,33.4,
+10 Sep 2026,31.8,
+11 Sep 2026,25.7,Corrected tag batch
+14 Sep 2026,11.1,
+15 Sep 2026,35.0,Updated (+FG001.1 & 3300 Dining Table)
+16 Sep 2026,28.3,
+17 Sep 2026,39.7,
+18 Sep 2026,49.1,
+21 Sep 2026,31.0,
+22 Sep 2026,21.9,
+23 Sep 2026,42.4,
+25 Sep 2026,46.5,
+28 Sep 2026,3.1,
+29 Sep 2026,42.5,
+30 Sep 2026,49.0,
+1 Oct 2026,16.7,
+2 Oct 2026,24.9,
+5 Oct 2026,30.2,
+6 Oct 2026,37.8,
+7 Oct 2026,11.1,
+8 Oct 2026,41.3,
+9 Oct 2026,35.0,
+12 Oct 2026,26.9,
+13 Oct 2026,21.1,
+14 Oct 2026,16.4,
+15 Oct 2026,54.4,
+16 Oct 2026,7.7,
+19 Oct 2026,22.0,
+20 Oct 2026,40.4,
+21 Oct 2026,21.2,
+22 Oct 2026,34.0,
+23 Oct 2026,16.3,
+26 Oct 2026,25.7,
+27 Oct 2026,25.5,
+28 Oct 2026,43.9,
+29 Oct 2026,38.3,
+30 Oct 2026,18.1,
+2 Nov 2026,30.8,
+3 Nov 2026,54.1,
+5 Nov 2026,18.4,
+6 Nov 2026,61.2,
+9 Nov 2026,50.4,
+10 Nov 2026,43.9,
+11 Nov 2026,60.5,
+12 Nov 2026,52.8,
+13 Nov 2026,51.7,
+16 Nov 2026,37.8,
+17 Nov 2026,18.0,`;
+
+/* ------------------------------ helpers ------------------------------ */
+const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+function parseDate(s){
+  const m = String(s).trim().match(/^(\d{1,2})\s+([A-Za-z]{3})[a-z]*\s+(\d{4})$/);
+  if(m) return new Date(+m[3], MONTHS[m[2].toLowerCase()], +m[1]);
+  const d = new Date(s); return isNaN(d) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+function parseCSV(text){
+  const rows=[]; let row=[], cur="", q=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(q){ if(c=='"'){ if(text[i+1]=='"'){cur+='"';i++;} else q=false; } else cur+=c; }
+    else if(c=='"') q=true;
+    else if(c==','){ row.push(cur); cur=""; }
+    else if(c=='\n'||c=='\r'){ if(c=='\r'&&text[i+1]=='\n') i++; row.push(cur); rows.push(row); row=[]; cur=""; }
+    else cur+=c;
+  }
+  if(cur||row.length){ row.push(cur); rows.push(row); }
+  return rows;
+}
+function toData(csv){
+  return parseCSV(csv).slice(1).map(r=>({date:parseDate(r[0]), v:parseFloat(r[1]), note:(r[2]||"").trim()}))
+    .filter(x=>x.date && isFinite(x.v)).sort((a,b)=>a.date-b.date);
+}
+const fmt = n => n.toLocaleString("en-ZA",{minimumFractionDigits:1,maximumFractionDigits:1});
+const fmtDate = d => d.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+const fmtDay = d => d.toLocaleDateString("en-GB",{weekday:"short"});
+const sum = a => a.reduce((s,x)=>s+x,0);
+const avg = a => a.length ? sum(a)/a.length : 0;
+function weekStart(d){ const x=new Date(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day); x.setHours(0,0,0,0); return x; }
+
+/* ------------------------------ render ------------------------------ */
+function delta(cur, prev, suffix){
+  if(!prev) return "";
+  const p=(cur-prev)/prev*100;
+  return `<span class="${p>=0?'up':'down'}">${p>=0?'▲':'▼'} ${Math.abs(p).toFixed(0)}%</span> ${suffix}`;
+}
+function renderKPIs(d){
+  const last=d[d.length-1];
+  const thisWk=weekStart(last.date), prevWk=new Date(thisWk); prevWk.setDate(prevWk.getDate()-7);
+  const wk = d.filter(x=>x.date>=thisWk);
+  const pwk = d.filter(x=>x.date>=prevWk && x.date<thisWk);
+  const mo = d.filter(x=>x.date.getMonth()==last.date.getMonth() && x.date.getFullYear()==last.date.getFullYear());
+  const pm = new Date(last.date.getFullYear(), last.date.getMonth()-1, 1);
+  const pmo = d.filter(x=>x.date.getMonth()==pm.getMonth() && x.date.getFullYear()==pm.getFullYear());
+  const prevDay=d[d.length-2];
+  const best=d.reduce((b,x)=>x.v>b.v?x:b,d[0]);
+  const k=[
+    ["Latest · "+fmtDay(last.date)+" "+fmtDate(last.date), fmt(last.v), prevDay?delta(last.v,prevDay.v,"vs previous day"):""],
+    ["This week (total)", fmt(sum(wk.map(x=>x.v))), pwk.length?delta(avg(wk.map(x=>x.v)),avg(pwk.map(x=>x.v)),"daily avg vs last wk"):""],
+    ["Month to date", fmt(sum(mo.map(x=>x.v))), pmo.length?delta(avg(mo.map(x=>x.v)),avg(pmo.map(x=>x.v)),"daily avg vs last mo"):""],
+    ["Daily avg · last 10 days", fmt(avg(d.slice(-10).map(x=>x.v))), "all-time avg "+fmt(avg(d.map(x=>x.v)))],
+    ["Best day", fmt(best.v), fmtDay(best.date)+" "+fmtDate(best.date)+" "+best.date.getFullYear()]
+  ];
+  document.getElementById("kpis").innerHTML=k.map(x=>
+    `<div class="card kpi"><div class="label">${x[0]}</div><div class="value">${x[1]}</div><div class="delta">${x[2]}</div></div>`).join("");
+}
+function niceMax(v){ const p=Math.pow(10,Math.floor(Math.log10(v))); const m=v/p; return (m<=1?1:m<=2?2:m<=5?5:10)*p; }
+function frame(W,H,max,ticks){
+  const L=44,R=10,T=10,B=28, iw=W-L-R, ih=H-T-B;
+  let g="";
+  for(let i=0;i<=ticks;i++){
+    const val=max*i/ticks, y=T+ih-ih*i/ticks;
+    g+=`<line x1="${L}" x2="${W-R}" y1="${y}" y2="${y}" stroke="#263446"/><text x="${L-8}" y="${y+4}" text-anchor="end">${val%1?val.toFixed(1):val}</text>`;
+  }
+  return {L,R,T,B,iw,ih,g};
+}
+function renderDaily(d){
+  const el=document.getElementById("daily"), W=el.clientWidth||900, H=el.clientHeight||300;
+  const s=d.slice(-30), allv=d.map(x=>x.v);
+  const ma=s.map((_,i)=>{ const idx=d.length-s.length+i; return avg(d.slice(Math.max(0,idx-4),idx+1).map(x=>x.v)); });
+  const max=niceMax(Math.max(...s.map(x=>x.v),...ma)*1.05), f=frame(W,H,max,4);
+  const bw=f.iw/s.length;
+  let bars="", lab="";
+  s.forEach((x,i)=>{
+    const h=f.ih*x.v/max, xx=f.L+i*bw+bw*.15, y=f.T+f.ih-h;
+    const latest=i==s.length-1;
+    bars+=`<rect x="${xx}" y="${y}" width="${bw*.7}" height="${h}" rx="2" fill="${latest?'#7cc4ff':'#3fa7ff'}" opacity="${latest?1:.8}"/>`;
+    if(i%3==(s.length-1)%3) lab+=`<text x="${xx+bw*.35}" y="${H-8}" text-anchor="middle">${fmtDate(x.date)}</text>`;
+  });
+  const pts=ma.map((v,i)=>`${f.L+i*bw+bw/2},${f.T+f.ih-f.ih*v/max}`).join(" ");
+  el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${f.g}${bars}
+    <polyline points="${pts}" fill="none" stroke="#ffc857" stroke-width="3" stroke-linejoin="round"/>${lab}</svg>`;
+}
+function renderWeekly(d){
+  const el=document.getElementById("weekly"), W=el.clientWidth||900, H=el.clientHeight||200;
+  const map=new Map();
+  d.forEach(x=>{ const k=+weekStart(x.date); map.set(k,(map.get(k)||0)+x.v); });
+  const w=[...map.entries()].sort((a,b)=>a[0]-b[0]).slice(-10);
+  const max=niceMax(Math.max(...w.map(x=>x[1]))*1.1), f=frame(W,H,max,4), bw=f.iw/w.length;
+  let bars="";
+  w.forEach(([k,v],i)=>{
+    const h=f.ih*v/max, xx=f.L+i*bw+bw*.2, y=f.T+f.ih-h, last=i==w.length-1;
+    bars+=`<rect x="${xx}" y="${y}" width="${bw*.6}" height="${h}" rx="3" fill="${last?'#3ddc97':'#2a8f69'}"/>
+      <text x="${xx+bw*.3}" y="${y-4}" text-anchor="middle" style="fill:#e9eef5">${v.toFixed(0)}</text>
+      <text x="${xx+bw*.3}" y="${H-8}" text-anchor="middle">${fmtDate(new Date(k))}</text>`;
+  });
+  el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${f.g}${bars}</svg>`;
+}
+function renderRows(d){
+  const n=Math.max(6, Math.floor((window.innerHeight*0.82)/ (window.innerHeight*0.05)) );
+  document.getElementById("rows").innerHTML=d.slice(-n).reverse().map(x=>
+    `<div class="row"><span class="d">${fmtDay(x.date)} ${fmtDate(x.date)}</span><span class="v">${fmt(x.v)}</span><span class="n">${x.note.replace(/</g,"&lt;")}</span></div>`).join("");
+}
+function render(d){
+  if(!d.length) return;
+  renderKPIs(d); renderDaily(d); renderWeekly(d); renderRows(d);
+  document.getElementById("stamp").textContent =
+    "Data to "+d[d.length-1].date.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"})+
+    " · refreshed "+new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"});
+}
+
+/* ------------------------------ load ------------------------------ */
+let DATA = toData(EMBEDDED_CSV);
+async function load(){
+  const err=document.getElementById("err"); err.textContent="";
+  if(CSV_URL){
+    try{
+      const r=await fetch(CSV_URL+(CSV_URL.includes("?")?"&":"?")+"t="+Date.now(),{cache:"no-store"});
+      if(!r.ok) throw new Error(r.status);
+      const d=toData(await r.text());
+      if(d.length) DATA=d; else throw new Error("empty");
+    }catch(e){ err.textContent="Live data unavailable – showing last known data"; }
+  }
+  render(DATA);
+}
+window.addEventListener("resize",()=>render(DATA));
+load();
+setInterval(load, REFRESH_MINUTES*60*1000);
+</script>
+</body>
+</html>
